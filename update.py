@@ -1,12 +1,7 @@
 #!/usr/bin/python3
 import re
-import glob
 import os
 import time
-import shutil
-import hashlib
-import time
-from datetime import datetime
 import logging
 import requests
 
@@ -67,10 +62,6 @@ def main():
     existing_servers = [f for f in os.listdir() if re.search(r"(paper-)(\d{1})\.(\d{,2})(\.\d{,2})?-(\d+).jar", f)]
     logging.info(f"{len(existing_servers)} existing servers have been found. Checking the version of the most recent one...")
     if existing_servers:
-        sha = hashlib.sha1()
-        f = open(existing_servers[0], 'rb')
-        sha.update(f.read())
-        cur_ver = sha.hexdigest()
         match = re.search("(paper-)(\d{1})\.(\d{,2})(\.\d{,2})?-(\d+).jar", existing_servers[0], re.IGNORECASE)
         if match.group(4):
             logging.info(f"You are currently running Paper version {match.group(2)}.{match.group(3)}{match.group(4)}, build number {match.group(5)}")
