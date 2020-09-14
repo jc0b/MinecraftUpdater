@@ -1,3 +1,6 @@
+#!/usr/bin/python3
+import re
+import glob
 import os
 import time
 import shutil
@@ -8,88 +11,84 @@ import logging
 import requests
 
 
-# CONFIGURATION
-UPDATE_TO_SNAPSHOT = True
-MANIFEST_URL = "https://launchermeta.mojang.com/mc/game/version_manifest.json"
-BACKUP_DIR = 'world_backups'
-LOG_FILENAME = 'auto_updater.log'
+# paper specific configuration
+PAPER_API_BASE = "https://papermc.io/api/v1"
+LOG_FILENAME = 'paper_updater.log'
+LOG_FORMAT = '%(asctime)s %(message)s'
 
-
-logging.basicConfig(filename=LOG_FILENAME,level=logging.INFO)
+logging.basicConfig(filename=LOG_FILENAME,level=logging.INFO, format=LOG_FORMAT)
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    
+def check_version(match, latest_paper_ver, latest_paper_build):
+    version_array = latest_paper_ver.split(".")
+    if match.group(4):
+        patch_version = int(match.group(4).strip("."))
 
-# retrieve version manifest
-response = requests.get(MANIFEST_URL)
-data = response.json()
+    if(int(version_array[1]) > int(match.group(3))):
+        logging.info(f"{version_array[1]} > {match.group(3)}")
+    elif(int(version_array[1]) >= int(match.group(3)) and int(version_array[2]) > patch_version):
+        logging.info(f"{version_array[1]} >= {match.group(3)} AND {version_array[2]} > {patch_version}")
+    elif(int(version_array[1]) >= int(match.group(3)) and int(version_array[2]) >= patch_version and latest_paper_build > int(match.group(5))):
+        logging.info(f"{version_array[2]} >= {patch_version} AND {latest_paper_build} > {match.group(5)}")
 
-if UPDATE_TO_SNAPSHOT:
-    minecraft_ver = data['latest']['snapshot']
-else:
-    minecraft_ver = data['latest']['release']
+    return (int(version_array[1]) > int(match.group(3))) or (int(version_array[1]) >= int(match.group(3)) and int(version_array[2]) > patch_version) or (int(version_array[1]) >= int(match.group(3)) and int(version_array[2]) >= patch_version and latest_paper_build > int(match.group(5)))
 
-# get checksum of running server
-if os.path.exists('../minecraft_server.jar'):
-    sha = hashlib.sha1()
-    f = open("../minecraft_server.jar", 'rb')
-    sha.update(f.read())
-    cur_ver = sha.hexdigest()
-else:
-    cur_ver = ""
+def download_server(version, build):
+    logging.info(f"Downloading Paper version {version}, build number {build}.")
+    jar_data = requests.get(PAPER_API_BASE + "/paper/" + version + "/latest/download")
+    with open(f"paper-{version}-{build}.jar", "wb") as jar_file:
+        jar_file.write(jar_data.content)
+    jar_file.close()
+    logging.info(f"Written updated jar file to paper-{version}-{build}.jar.")
+    logging.info("Update complete. Please make any necessary changes to any start scripts, and restart the server.")
 
-for version in data['versions']:
-    if version['id'] == minecraft_ver:
-        jsonlink = version['url']
-        jar_data = requests.get(jsonlink).json()
-        jar_sha = jar_data['downloads']['server']['sha1']
+def remove_old_servers(filelist):
+    logging.info(f"Cleaning up {len(filelist)} old server(s)...")
+    for file in filelist:
+        logging.info(f"Deleting {file}...")
+        os.remove(file)
+    logging.info("Cleanup complete.")
 
-        logging.info('Your sha1 is ' + cur_ver + '. Latest version is ' + str(minecraft_ver) + " with sha1 of " + jar_sha)
+def main():
+    logging.info("Starting update run...")
+    # retrieve version manifest
+    logging.info("Getting Paper release versions...")
+    response = requests.get(PAPER_API_BASE + "/paper")
+    data = response.json()
+    latest_paper_ver = data["versions"][0]
+    response = requests.get(PAPER_API_BASE + "/paper/" + latest_paper_ver)
+    latest_paper_build = int(response.json()["builds"]["latest"])
 
-        if cur_ver != jar_sha:
-            logging.info('Updating server...')
-            link = jar_data['downloads']['server']['url']
-            logging.info('Downloading .jar from ' + link + '...')
-            response = requests.get(link)
-            with open('minecraft_server.jar', 'wb') as jar_file:
-                jar_file.write(response.content)
-            logging.info('Downloaded.')
-            os.system('screen -S minecraft -X stuff \'say ATTENTION: Server will shutdown for 1 minutes to update in 30 seconds.^M\'')
-            logging.info('Shutting down server in 30 seconds.')
+    logging.info(f'The latest version of Paper is {latest_paper_ver}, build {latest_paper_build}.')
 
-            for i in range(20, 9, -10):
-                time.sleep(10)
-                os.system('screen -S minecraft -X stuff \'say Shutdown in ' + str(i) + ' seconds^M\'')
-
-            for i in range(9, 0, -1):
-                time.sleep(1)
-                os.system('screen -S minecraft -X stuff \'say Shutdown in ' + str(i) + ' seconds^M\'')
-            time.sleep(1)
-
-            logging.info('Stopping server.')
-            os.system('screen -S minecraft -X stuff \'stop^M\'')
-            time.sleep(5)
-            logging.info('Backing up world...')
-
-            if not os.path.exists(BACKUP_DIR):
-                os.makedirs(BACKUP_DIR)
-
-            backupPath = os.path.join(
-                BACKUP_DIR,
-                "world" + "_backup_" + datetime.now().isoformat().replace(':', '-') + "_sha=" + cur_ver)
-            shutil.copytree("../world", backupPath)
-
-            logging.info('Backed up world.')
-            logging.info('Updating server .jar')
-
-            if os.path.exists('../minecraft_server.jar'):
-                os.remove('../minecraft_server.jar')
-
-            os.rename('minecraft_server.jar', '../minecraft_server.jar')
-            logging.info('Starting server...')
-            os.chdir("..")
-            os.system('screen -S minecraft -d -m java -Xms16G -Xmx16G -jar minecraft_server.jar')
-
+    # check for any servers we have, and see whether they need updating
+    logging.info("Checking versions of local servers...")
+    match = ""
+    existing_servers = [f for f in os.listdir() if re.search(r"(paper-)(\d{1})\.(\d{,2})(\.\d{,2})?-(\d+).jar", f)]
+    logging.info(f"{len(existing_servers)} existing servers have been found. Checking the version of the most recent one...")
+    if existing_servers:
+        sha = hashlib.sha1()
+        f = open(existing_servers[0], 'rb')
+        sha.update(f.read())
+        cur_ver = sha.hexdigest()
+        match = re.search("(paper-)(\d{1})\.(\d{,2})(\.\d{,2})?-(\d+).jar", existing_servers[0], re.IGNORECASE)
+        if match.group(4):
+            logging.info(f"You are currently running Paper version {match.group(2)}.{match.group(3)}{match.group(4)}, build number {match.group(5)}")
         else:
-            logging.info('Server is already up to date.')
+            logging.info(f"You are currently running Paper version {match.group(2)}.{match.group(3)}, build number {match.group(5)}")
+        if check_version(match, latest_paper_ver, latest_paper_build):
+            download_server(latest_paper_ver, latest_paper_build)
+            remove_old_servers(existing_servers)
+            logging.info("\n")
+            exit(0)
+        else:
+            logging.info("You are up to date!\n")
+            exit(0)
+    else:
+        logging.info("No existing servers could be found.")
+        download_server(latest_paper_ver, latest_paper_build)
+        exit(0)
 
-        break
-
+if __name__ == "__main__":
+    main()
+    logging.info("\n")
