@@ -69,7 +69,7 @@ def main():
             logging.info(f"You are currently running Paper version {match.group(2)}.{match.group(3)}, build number {match.group(5)}")
         if check_version(match, latest_paper_ver, latest_paper_build):
             download_server(latest_paper_ver, latest_paper_build)
-            remove_old_servers(existing_servers)
+            # remove_old_servers(existing_servers)
             logging.info("\n")
             exit(0)
         else:
